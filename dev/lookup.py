@@ -104,12 +104,15 @@ def print_translation(results):
     for letter, motors in results:
         print(f"\nLetter '{letter}' -> activate:")
         if not motors:
-            print("  (no motors active or mapping missing)")
+            print("  (ERROR: no motors active or mapping missing)")
         else:
             for m in motors:
                 print(f"  Driver {m['driver']} | Servo {m['motor']} | Position: {m['position']}")
 
-if __name__ == "__main__":
+def main():
     word = input("Enter a word to translate to Braille servo commands: ")
     res = translate_word(word, servo_lut)
     print_translation(res)
+
+if __name__ == "__main__":
+    main()
