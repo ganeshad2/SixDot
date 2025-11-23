@@ -1,3 +1,11 @@
+import time
+import threading
+from adafruit_servokit import ServoKit
+
+# Set channels to the number of servo channels on your kit.
+# 8 for FeatherWing, 16 for Shield/HAT/Bonnet.
+kit = ServoKit(channels=16)
+
 # Part 1: create a LUT for alphabet to binary translation
 # logic is:
     # eg. A = top left on = 100000
@@ -21,22 +29,22 @@ dot_positions = ["top left", "middle left", "bot left", "top right", "middle rig
 
 # Format: servo motor number: {"position": "position name respective to 6 dot_positions"}
 servo_lut = {
-    1: {"position": "top left"},    2: {"position": "middle left"}, 3: {"position": "bot left"},
-    4: {"position": "top right"},   5: {"position": "middle right"},6: {"position": "bot right"},
-    7: {"position": "top left"},    8: {"position": "middle left"}, 9: {"position": "bot left"},
-    10: {"position": "top right"}, 11: {"position": "middle right"},12: {"position": "bot right"},
-    13: {"position": "top left"},   14: {"position": "middle left"},15: {"position": "bot left"},
-    16: {"position": "top right"}, 17: {"position": "middle right"},18: {"position": "bot right"},
-    19: {"position": "top left"},   20: {"position": "middle left"},21: {"position": "bot left"},
-    22: {"position": "top right"}, 23: {"position": "middle right"},24: {"position": "bot right"},
-    25: {"position": "top left"},   26: {"position": "middle left"},27: {"position": "bot left"},
-    28: {"position": "top right"}, 29: {"position": "middle right"},30: {"position": "bot right"},
-    31: {"position": "top left"},   32: {"position": "middle left"},33: {"position": "bot left"},
-    34: {"position": "top right"}, 35: {"position": "middle right"},36: {"position": "bot right"},
-    37: {"position": "top left"},   38: {"position": "middle left"},39: {"position": "bot left"},
-    40: {"position": "top right"}, 41: {"position": "middle right"},42: {"position": "bot right"},
-    43: {"position": "top left"},   44: {"position": "middle left"},45: {"position": "bot left"},
-    46: {"position": "top right"}, 47: {"position": "middle right"},48: {"position": "bot right"},
+    0: {"position": "top left"},    1: {"position": "middle left"}, 2: {"position": "bot left"},
+    3: {"position": "top right"},   4: {"position": "middle right"}, 5: {"position": "bot right"},
+    6: {"position": "top left"},    7: {"position": "middle left"}, 8: {"position": "bot left"},
+    9: {"position": "top right"},  10: {"position": "middle right"}, 11: {"position": "bot right"},
+    12: {"position": "top left"},   13: {"position": "middle left"}, 14: {"position": "bot left"},
+    15: {"position": "top right"},  16: {"position": "middle right"}, 17: {"position": "bot right"},
+    18: {"position": "top left"},   19: {"position": "middle left"}, 20: {"position": "bot left"},
+    21: {"position": "top right"},  22: {"position": "middle right"}, 23: {"position": "bot right"},
+    24: {"position": "top left"},   25: {"position": "middle left"}, 26: {"position": "bot left"},
+    27: {"position": "top right"},  28: {"position": "middle right"}, 29: {"position": "bot right"},
+    30: {"position": "top left"},   31: {"position": "middle left"}, 32: {"position": "bot left"},
+    33: {"position": "top right"},  34: {"position": "middle right"}, 35: {"position": "bot right"},
+    36: {"position": "top left"},   37: {"position": "middle left"}, 38: {"position": "bot left"},
+    39: {"position": "top right"},  40: {"position": "middle right"}, 41: {"position": "bot right"},
+    42: {"position": "top left"},   43: {"position": "middle left"}, 44: {"position": "bot left"},
+    45: {"position": "top right"},  46: {"position": "middle right"}, 47: {"position": "bot right"},
 }
 
 #Return a list of motor_ids sorted ascending (physical order)
@@ -49,7 +57,11 @@ def build_motor_sequence(servo_lut):
 # e.g. motor_id = 17 
     # (17-1)//16 + 1 = 16//16 + 1 = 1 + 1 = 2 -> Driver 2
 def motor_driver_from_id(motor_id, motors_per_driver=16):
-    return ((motor_id - 1) // motors_per_driver) + 1
+    # Edge case handling for motor_id = 0
+    if (motor_id == 0):
+        return 1
+    else:
+        return ((motor_id - 1) // motors_per_driver) + 1
 
 def translate_letter_to_motors(letter, motor_sequence, cell_index):
     """
@@ -67,7 +79,7 @@ def translate_letter_to_motors(letter, motor_sequence, cell_index):
     pattern = braille_lut[letter]
     # define range of where letter starts and ends
     start_idx = cell_index * 6
-    end_idx = start_idx + 6
+    end_idx = (start_idx + 6) - 1
 
     # catch error for word out of motor scope
     if end_idx > len(motor_sequence):
@@ -109,10 +121,45 @@ def print_translation(results):
             for m in motors:
                 print(f"  Driver {m['driver']} | Servo {m['motor']} | Position: {m['position']}")
 
+# Top level multi-threading function created to run motors in parallel
+def run_motor(results):
+
+    # sub function for required motor motion (can be updated later to accurate requirement)
+    def run_individual_motor(motor_number):
+        if motor_number is not None:
+            kit.continuous_servo[motor_number].throttle = 1
+            time.sleep(1)
+            kit.continuous_servo[motor_number].throttle = -1
+            time.sleep(1)
+            kit.continuous_servo[motor_number].throttle = 0
+            time.sleep(1)
+
+    threads = []
+
+    # Iterate through each motor in results
+    for motors in results:
+        letter, motor_dicts = motors
+    
+    # Extract motor number
+        for motor_dict in motor_dicts:
+            motor_number = motor_dict.get('motor')  
+
+            # Create a new thread for each motor and start it
+            if motor_number is not None:
+                thread = threading.Thread(target=run_individual_motor, args=(motor_number,))
+                threads.append(thread)
+                thread.start()
+
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()
+
 def main():
     word = input("Enter a word to translate to Braille servo commands: ")
     res = translate_word(word, servo_lut)
     print_translation(res)
+    run_motor(res)
+
 
 if __name__ == "__main__":
     main()
