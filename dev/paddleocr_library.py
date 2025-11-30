@@ -12,7 +12,7 @@ logging.getLogger("paddleocr").setLevel(logging.FATAL)
 reader = PaddleOCR(lang='en')   
 
 
-image_folder = 'Test Images'
+image_folder = 'dev/Test Images'
 
 # loops through all jpg files (sorted by name)
 for filename in sorted(os.listdir(image_folder)):
