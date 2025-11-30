@@ -1,5 +1,7 @@
 import time
 from adafruit_servokit import ServoKit
+import board
+import busio
 
 # init test
 """import board
@@ -18,13 +20,15 @@ pca = adafruit_pca9685.PCA9685(i2c)"""
 
 # Datastructure - dict {'letter' : [dots that needs to be active]}
 
-# LUT for servos
-
+# Shared I2C bus
+i2c = busio.I2C(board.SCL, board.SDA)
 
 # Set channels to the number of servo channels on your kit.
 # 8 for FeatherWing, 16 for Shield/HAT/Bonnet.
-kit = ServoKit(channels=16)
+kit1 = ServoKit(channels=16, i2c=i2c, address=0x40)
+kit2 = ServoKit(channels=16, i2c=i2c, address=0x41)
 
+'''
 kit.servo[0].angle = 180
 kit.continuous_servo[1].throttle = 1
 time.sleep(1)
@@ -40,5 +44,15 @@ kit.continuous_servo[1].throttle = -1
 time.sleep(1)
 kit.servo[15].angle = 0
 kit.continuous_servo[1].throttle = 0
+'''
+kit1.continuous_servo[0].throttle = 1
+time.sleep(1)
+kit1.continuous_servo[0].throttle = -1
+time.sleep(1)
+kit1.continuous_servo[0].throttle = 0
 
-
+kit2.continuous_servo[0].throttle = 1
+time.sleep(1)
+kit2.continuous_servo[0].throttle = -1
+time.sleep(1)
+kit2.continuous_servo[0].throttle = 0
