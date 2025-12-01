@@ -86,7 +86,7 @@ def translate_letter_to_motors(letter, motor_sequence, cell_index):
     pattern = braille_lut[letter]
     # define range of where letter starts and ends
     start_idx = cell_index * 6
-    end_idx = (start_idx + 6) - 1
+    end_idx = (start_idx + 6)
 
     # catch error for word out of motor scope
     if end_idx > len(motor_sequence):
