@@ -1,4 +1,4 @@
-#Test File for lookup.py
+#test File for lookup.py
 
 from lookup import translate_word, print_translation, servo_lut
 
@@ -11,20 +11,24 @@ def run_braille_test(word):
     print(f"Testing: '{word}'")
     results = translate_word(word, servo_lut)
     print_translation(results)
-    print("=" * 60 + "\n")
+    print("")
 
-    #detect issues
     invalid_letters = []
     motor_overflow = False
-    for ch, motors in results:
-        if not motors:
-            if ch.isalpha():
+
+    for item in results:
+        character = item[0] #letter/character
+        motors = item[1] #list of motor positions
+        if not motors:# if motors list is empty
+            if character.isalpha():
                 motor_overflow = True
-            elif ch.strip():  # skip spaces
-                invalid_letters.append(ch)
+            elif character.strip(): #ignore spaces
+                invalid_letters.append(character)
 
     #flag error if any issues exist
-    if invalid_letters or motor_overflow:
+    if invalid_letters:
+        error_flag = True
+    if motor_overflow:
         error_flag = True
 
     return {
@@ -57,41 +61,66 @@ def main():
         " ", #should pass
         ".", #should fail - no special characters
         ",", #should fail
-        "!@#" #should fail
+        "!@#", #should fail
+        "ABCDEFGH!",
+        "ABCDEFGHI"
     ]
 
-    print("\n=== BRAILLE TRANSLATION FUNCTIONAL TESTS ===\n")
-
+    print("\nTest Begins:\n")
     all_summaries = []
+
     #acquire data for each test case
     for word in test_cases:
         summary = run_braille_test(word)
         all_summaries.append(summary)
 
-    #summary table
-    print("\n=== SUMMARY REPORT ===")
-    print(f"{'Word':<15} {'Active Motors':<35} {'Status':<13} {'Notes'}")
-    print("-" * 90)
+    #create summary table
+    print("\nSummary:\n")
+    print(f"{'Word':<15} {'Active Motors':<35} {'Status':<13} {'Reason'}")
 
-    #iterate through each test entry and summarize results in table
+    #iterate through each test entry and summarize results
     for entry in all_summaries:
         word = entry["word"]
         results = entry["results"]
-        active_counts = [len(m) for _, m in results] if results else []
-        status = "✅ OK"
 
-        notes = []
-        if entry["invalid_letters"]:
-            notes.append(f"Invalid chars: {', '.join(entry['invalid_letters'])}")
-        if entry["motor_overflow"]:
-            notes.append("Out of motor range")
+        #get active motor counts
+        active_counts = []
+        for item in results:
+            motors = item[1]
+            count = len(motors)
+            active_counts.append(count)
+        status = "PASS"
+
         if entry["error_flag"]:
-            status = "❌ ERROR"
+            status = "FAIL" #change status to fail
 
-        note_text = "; ".join(notes) if notes else "-"
-        print(f"{word!r:<15} {str(active_counts):<35} {status:<13} {note_text}")
+        #build fail explanation
+        reasons = []
+        invalid_str = ""
+        explanation = ""
 
-    print("\nTest suite complete.\n")
+        if len(entry["invalid_letters"]) > 0: #check for invalid characters
+            for i in range(len(entry["invalid_letters"])):
+                if i == 0:
+                    invalid_str = entry["invalid_letters"][i]
+                else:
+                    invalid_str = invalid_str + ", " + entry["invalid_letters"][i]
+            reasons.append("Invalid Characters: " + invalid_str)
+
+        if entry["motor_overflow"]: #check for motor overflow
+            reasons.append("Out of Motor Range")
+
+        #create explanation for summary
+        if len(reasons) > 0:
+            for i in range(len(reasons)):
+                explanation = reasons[i]
+        else:
+            explanation = "-"
+
+        #setup data in summary table
+        print(f"{word:<15} {str(active_counts):<35} {status:<13} {explanation}")
+
+    print("\nTests Complete\n")
 
 if __name__ == "__main__":
     main()
