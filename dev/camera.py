@@ -3,31 +3,31 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-# Only check external camera indices
+# 0 is typically reserved fo internal camera while 1 and 2 are external indices
 EXTERNAL_CAMERA_INDICES = [1, 2]
 
-# ---------- shared state ----------
-command = None
-running = True
 
-# ---------- paths ----------
+# used for threading terminal input without blocking the camera preview loop
+command = None # stores the latest user command (s, q)
+running = True #controls when the program should exit
+
 CAPTURE_DIR = Path.cwd() / "captures"
 CAPTURE_DIR.mkdir(exist_ok=True)
 
-# ---------- camera selection ----------
+# camera selection and decleration
 def open_external_camera(indices):
     for idx in indices:
         cap = cv2.VideoCapture(idx)
         if cap.isOpened():
-            # warm-up frames
+            # warm up frames  (used before capturing a stable image)
             for _ in range(10):
                 cap.read()
             print(f"Using external camera index: {idx}")
             return cap, idx
         cap.release()
-    return None, None
+    return None, None #fail cleanly handling
 
-# ---------- input thread ----------
+# input thread
 def input_thread():
     global command, running
     print("\nCommands:")
@@ -49,7 +49,6 @@ def input_thread():
         else:
             print("Unknown command. Type 'h' for help.")
 
-# ---------- main ----------
 def main():
     global command, running
 
@@ -59,13 +58,17 @@ def main():
         print("Make sure it is plugged in and not used by another application.")
         return
 
+    # start the terminal input in a background thread
     threading.Thread(target=input_thread, daemon=True).start()
 
+    # store the most recent frame
     last_frame = None
     window_name = f"Webcam Preview (external camera {cam_idx})"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
+    # main camera loop, runs until user quits
     while running:
+        #capture one frame from the webcam
         ret, frame = cap.read()
         if not ret:
             print("Error: Failed to read frame.")
