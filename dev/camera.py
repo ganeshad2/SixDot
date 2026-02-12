@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 # 0 is typically reserved fo internal camera while 1 and 2 are external indices
-EXTERNAL_CAMERA_INDICES = [1, 2]
+EXTERNAL_CAMERA_INDICES = [0, 1, 2]
 
 
 # used for threading terminal input without blocking the camera preview loop
