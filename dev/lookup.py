@@ -10,12 +10,12 @@ i2c = busio.I2C(board.SCL, board.SDA)
 # Set channels to the number of servo channels on your kit.
 # 8 for FeatherWing, 16 for Shield/HAT/Bonnet.
 kit1 = ServoKit(channels=16, i2c=i2c, address=0x40)
-kit2 = ServoKit(channels=16, i2c=i2c, address=0x41)
+#kit2 = ServoKit(channels=16, i2c=i2c, address=0x41)
 
 # Enable PCA9685 mapping depending on driver number calculated
 driver_kits = {
     1: kit1,  # motors  0–15
-    2: kit2,  # motors 16–31
+    #2: kit2,  # motors 16–31
     #3: kit3,  # motors 32–47
 }
 
@@ -34,6 +34,28 @@ braille_lut = {
 }
 
 dot_positions = ["top left", "middle left", "bot left", "top right", "middle right", "bot right"]
+
+HOME_ANGLE_BY_POSITION = {
+    "top left": 100,      # upside down -> home is 100
+    "middle left": 0,     # normal -> home is 0
+    "bot left": 100,
+
+    # defaults for now (you can tune later)
+    "top right": 0,
+    "middle right": 0,
+    "bot right": 0,
+}
+
+ON_ANGLE_BY_POSITION = {
+    "top left": 0,        # top left ON = 0
+    "middle left": 100,   # middle left ON = 100
+    "bot left": 0,
+
+    # defaults for now
+    "top right": 100,
+    "middle right": 100,
+    "bot right": 100,
+}
 
 # Part 2: Write motor LUT referencing alphabet LUT
 # logic is: 
@@ -143,13 +165,15 @@ def run_motor(results):
         # Compute the motor channel (0-15) based on top level motor_id (0-47)
         channel = motor_number % 16
 
-        # Basic motion pattern (we can update when actually running)
-        kit.continuous_servo[channel].throttle = 1
-        time.sleep(1)
-        kit.continuous_servo[channel].throttle = -1
-        time.sleep(1)
-        kit.continuous_servo[channel].throttle = 0
-        time.sleep(1)
+        s = kit.servo[channel]
+
+        home_angle = HOME_ANGLE_BY_POSITION.get(position, 0)
+        on_angle   = ON_ANGLE_BY_POSITION.get(position, 100)
+
+        # Assume already at home
+        s.angle = on_angle
+        time.sleep(5)     # stay ON for 5 seconds
+        s.angle = home_angle
 
     threads = []
 
