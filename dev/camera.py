@@ -1,10 +1,11 @@
 import cv2
+import os
 import threading
 from datetime import datetime
 from pathlib import Path
 
-# 0 is typically reserved fo internal camera while 1 and 2 are external indices
-EXTERNAL_CAMERA_INDICES = [0, 1, 2]
+# Prefer external-camera style indices first, then fall back to index 0.
+EXTERNAL_CAMERA_INDICES = [1, 2, 3, 4, 0]
 
 
 # used for threading terminal input without blocking the camera preview loop
@@ -14,18 +15,68 @@ running = True #controls when the program should exit
 CAPTURE_DIR = Path.cwd() / "captures"
 CAPTURE_DIR.mkdir(exist_ok=True)
 
+def _camera_backends():
+    return [cv2.CAP_DSHOW, cv2.CAP_ANY] if os.name == "nt" else [cv2.CAP_ANY]
+
+
+def open_camera_by_index(index):
+    for backend in _camera_backends():
+        cap = cv2.VideoCapture(index, backend)
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        # Warm up frames and confirm the camera can actually produce an image.
+        frame_ok = False
+        for _ in range(10):
+            ret, _ = cap.read()
+            if ret:
+                frame_ok = True
+
+        if frame_ok:
+            print(f"Using camera index: {index}")
+            return cap, index
+
+        cap.release()
+
+    return None, None
+
+
+def list_available_cameras(indices):
+    available = []
+    for idx in indices:
+        cap, camera_index = open_camera_by_index(idx)
+        if cap is not None:
+            available.append(camera_index)
+            cap.release()
+
+    return available
+
+
 # camera selection and decleration
 def open_external_camera(indices):
     for idx in indices:
-        cap = cv2.VideoCapture(idx)
-        if cap.isOpened():
-            # warm up frames  (used before capturing a stable image)
-            for _ in range(10):
-                cap.read()
-            print(f"Using external camera index: {idx}")
-            return cap, idx
-        cap.release()
+        cap, camera_index = open_camera_by_index(idx)
+        if cap is not None:
+            return cap, camera_index
     return None, None #fail cleanly handling
+
+
+def get_camera_info(camera_index):
+    return f"Active external camera index: {camera_index}"
+
+
+def save_snapshot(frame, camera_index):
+    if frame is None:
+        return False, "No frame available yet.", None
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = CAPTURE_DIR / f"snapshot_cam{camera_index}_{timestamp}.jpg"
+    success = cv2.imwrite(str(filepath), frame)
+
+    if success:
+        return True, "Image saved successfully.", filepath.resolve()
+    return False, "Error: Failed to save image.", None
 
 # input thread
 def input_thread():
@@ -86,21 +137,13 @@ def main():
                 print("Commands: s=save snapshot, q=quit, c=camera info, h=help")
 
             elif cmd == "c":
-                print(f"Active external camera index: {cam_idx}")
+                print(get_camera_info(cam_idx))
 
             elif cmd == "s":
-                if last_frame is None:
-                    print("No frame available yet.")
-                else:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filepath = CAPTURE_DIR / f"snapshot_cam{cam_idx}_{timestamp}.jpg"
-
-                    success = cv2.imwrite(str(filepath), last_frame)
-                    if success:
-                        print("Image saved successfully.")
-                        print(f"Saved to: {filepath.resolve()}")
-                    else:
-                        print("Error: Failed to save image.")
+                success, message, filepath = save_snapshot(last_frame, cam_idx)
+                print(message)
+                if success and filepath is not None:
+                    print(f"Saved to: {filepath}")
 
             elif cmd == "q":
                 running = False
