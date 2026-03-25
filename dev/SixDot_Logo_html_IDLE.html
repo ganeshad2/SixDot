@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SixDot v2</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #111111;
+      --dot-active:   #ffffff;
+      --dot-inactive: #272727;
+      --text:         #ffffff;
+      --dot-size:     34px;
+      --dot-gap:      18px;
+      --col-gap:      54px;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Inter', sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── Starfield ── */
+    .stars { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+    .star {
+      position: absolute;
+      width: 2px; height: 2px;
+      background: #fff;
+      border-radius: 50%;
+      animation: twinkle var(--dur) ease-in-out infinite var(--delay);
+    }
+    @keyframes twinkle { 0%,100% { opacity: 0.03; } 50% { opacity: 0.28; } }
+
+    /* ── Stage ── */
+    .stage {
+      position: relative; 
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 34px;
+      transform: scale(1.18);
+      transform-origin: center center;
+    }
+
+    /* ── Display area: row of columns + inline cursor ── */
+    .display-area {
+      display: flex;
+      align-items: center;
+      gap: var(--col-gap);
+    }
+
+    /* ── Each letter/braille column ── */
+    .letter-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      /* width locked to braille grid width so columns never shift */
+      width: calc(2 * var(--dot-size) + var(--dot-gap));
+    }
+
+    /*
+      CSS grid stacking: letter and braille-grid overlap in the
+      same cell so swapping them is a pure opacity crossfade.
+    */
+    .swap {
+      display: grid;
+      width: 100%;
+    }
+    .swap > * { grid-area: 1 / 1; place-self: center; }
+
+    /* ── Letter ── */
+    .letter-char {
+      font-size: clamp(84px, 10vw, 156px);
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1;
+      opacity: 0;                    /* starts invisible */
+      transition: opacity 0.07s ease;
+    }
+    .letter-char.on { opacity: 1; }
+
+    /* ── Braille grid (no box — just dots) ── */
+    .braille-grid {
+      display: grid;
+      grid-template-columns: repeat(2, var(--dot-size));
+      grid-template-rows: repeat(3, var(--dot-size));
+      gap: var(--dot-gap);
+      opacity: 0;                    /* starts invisible */
+      transition: opacity 0.07s ease;
+    }
+    .braille-grid.on { opacity: 1; }
+
+    .dot {
+      width: var(--dot-size);
+      height: var(--dot-size);
+      border-radius: 50%;
+      background: var(--dot-inactive);
+    }
+    .dot.lit {
+      background: var(--dot-active);
+      box-shadow: 0 0 8px rgba(255,255,255,0.55), 0 0 18px rgba(255,255,255,0.1);
+    }
+
+    /* ── Blinking cursor ── */
+    .cursor {
+      width: 6px;
+      /* height matches the taller of the two phases — the braille grid */
+      height: calc(3 * var(--dot-size) + 2 * var(--dot-gap));
+      background: #ffffff;
+      border-radius: 2px;
+      flex-shrink: 0;
+      box-shadow: 0 0 7px rgba(255,255,255,0.45);
+      animation: blink 0.72s step-end infinite;
+    }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+    .cursor.off { display: none; }
+
+    /* ── Tagline ── */
+    .tagline {
+      font-size: 26px;
+      font-weight: 400;
+      letter-spacing: 0.42em;
+      color: rgba(210, 210, 210, 0.85);
+      text-transform: uppercase;
+      opacity: 0;
+      transition: opacity 1s ease;
+      position: static;
+      text-align: center;
+    }
+    .tagline.visible { opacity: 1; }
+
+    /* ── Replay button ── */
+    .replay-btn {
+      padding: 9px 26px;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 999px;
+      color: #777777;
+      font-family: 'Inter', sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.5s, background 0.2s, border-color 0.2s, color 0.2s;
+    }
+    .replay-btn.visible { opacity: 1; }
+    .replay-btn:hover {
+      background: rgba(255,255,255,0.05);
+      border-color: rgba(255,255,255,0.38);
+      color: #cccccc;
+    }
+  </style>
+</head>
+<body>
+
+<div class="stars" id="stars"></div>
+
+<div class="stage">
+  <div class="display-area" id="display-area"></div>
+  <div class="tagline" id="tagline">feel every letter</div>
+</div>
+
+<script>
+  /* ── Starfield ── */
+  (() => {
+    const el = document.getElementById('stars');
+    for (let i = 0; i < 130; i++) {
+      const s = document.createElement('div');
+      s.className = 'star';
+      s.style.cssText = `left:${Math.random()*100}%;top:${Math.random()*100}%;`
+        + `--dur:${2+Math.random()*5}s;--delay:${Math.random()*6}s;`
+        + `opacity:${0.04+Math.random()*0.22};`;
+      el.appendChild(s);
+    }
+  })();
+
+  /* ── Braille definitions ──
+     Standard 6-dot cell:
+       dot1(top-L)  dot4(top-R)
+       dot2(mid-L)  dot5(mid-R)
+       dot3(bot-L)  dot6(bot-R)
+     Grid array index: [d1, d4, d2, d5, d3, d6]
+  */
+  const LETTERS = [
+    { letter: 'S', dots: [2, 3, 4]    },
+    { letter: 'I', dots: [2, 4]        },
+    { letter: 'X', dots: [1, 3, 4, 6] },
+    { letter: 'D', dots: [1, 4, 5]    },
+    { letter: 'O', dots: [1, 3, 5]    },
+    { letter: 'T', dots: [2, 3, 4, 5] },
+  ];
+
+  const DOT_TO_IDX = { 1:0, 4:1, 2:2, 5:3, 3:4, 6:5 };
+
+  function dotsToGrid(dots) {
+    const g = [0,0,0,0,0,0];
+    dots.forEach(d => { g[DOT_TO_IDX[d]] = 1; });
+    return g;
+  }
+
+  /* ── Build columns ── */
+  function buildColumns() {
+    const area = document.getElementById('display-area');
+    area.innerHTML = '';
+
+    LETTERS.forEach(({ letter, dots }) => {
+      const grid = dotsToGrid(dots);
+
+      const col = document.createElement('div');
+      col.className = 'letter-col';
+
+      const swap = document.createElement('div');
+      swap.className = 'swap';
+
+      const letterEl = document.createElement('span');
+      letterEl.className = 'letter-char';
+      letterEl.textContent = letter;
+
+      const gridEl = document.createElement('div');
+      gridEl.className = 'braille-grid';
+      grid.forEach(isLit => {
+        const dot = document.createElement('div');
+        dot.className = isLit ? 'dot lit' : 'dot';
+        gridEl.appendChild(dot);
+      });
+
+      swap.appendChild(letterEl);
+      swap.appendChild(gridEl);
+      col.appendChild(swap);
+      area.appendChild(col);
+    });
+
+    // Cursor lives inside display-area, after columns
+    const cursor = document.createElement('div');
+    cursor.className = 'cursor off';
+    cursor.id = 'cursor';
+    area.appendChild(cursor);
+  }
+
+  /* ── Cursor helpers ── */
+  // Place cursor immediately after column[idx], or remove if idx === -1
+  function moveCursor(cols, idx) {
+    const cursor = document.getElementById('cursor');
+    if (!cursor) return;
+    if (idx < 0) {
+      cursor.classList.add('off');
+      return;
+    }
+    cursor.classList.remove('off');
+    // Re-insert cursor after the target column
+    cols[idx].insertAdjacentElement('afterend', cursor);
+  }
+
+  /* ── Timer helpers ── */
+  let timers = [];
+  function after(fn, ms) { timers.push(setTimeout(fn, ms)); }
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+  /* ── Jitter for realistic timing ── */
+  function jitter(base, spread = 50) { return base + Math.random() * spread; }
+
+  /* ── Main animation ── */
+  function startAnimation() {
+  buildColumns();
+  clearTimers();
+
+  const area    = document.getElementById('display-area');
+  const tagline = document.getElementById('tagline');
+  tagline.classList.remove('visible');
+
+  const cols = Array.from(area.querySelectorAll('.letter-col'));
+
+  // ── Phase 1: Type SIXDOT ──────────────────────────────────────
+  let t = 300;
+  cols.forEach((col, i) => {
+    after(() => {
+      col.querySelector('.letter-char').classList.add('on');
+      moveCursor(cols, i);
+    }, t);
+    t += jitter(110, 60);
+  });
+
+  // ── Phase 2: Pause, freeze cursor, delete SIXDOT ──────────────
+  t += 700;
+
+  after(() => {
+    const cursor = document.getElementById('cursor');
+    if (cursor) cursor.style.animation = 'none';
+  }, t - 120);
+
+  for (let i = cols.length - 1; i >= 0; i--) {
+    const idx = i;
+    after(() => {
+      cols[idx].querySelector('.letter-char').classList.remove('on');
+      moveCursor(cols, idx - 1);
+    }, t);
+    t += jitter(120, 50);
+  }
+
+  // ── Phase 3: Restart cursor, show braille ─────────────────────
+  t += 250;
+
+  after(() => {
+    const cursor = document.getElementById('cursor');
+    if (cursor) {
+      cursor.style.animation = '';
+      moveCursor(cols, -1);
+    }
+  }, t);
+
+  t += 150;
+
+  cols.forEach((col, i) => {
+    after(() => {
+      col.querySelector('.braille-grid').classList.add('on');
+      moveCursor(cols, i);
+    }, t);
+    t += jitter(160, 60);
+  });
+
+  //  Tagline appears RIGHT after braille is done
+  after(() => tagline.classList.add('visible'), t - 100);
+
+  // ── Phase 4: Pause, freeze cursor, delete braille ─────────────
+  t += 600;
+
+  after(() => {
+    const cursor = document.getElementById('cursor');
+    if (cursor) cursor.style.animation = 'none';
+  }, t - 120);
+
+  for (let i = cols.length - 1; i >= 0; i--) {
+    const idx = i;
+    after(() => {
+      cols[idx].querySelector('.braille-grid').classList.remove('on');
+      moveCursor(cols, idx - 1);
+    }, t);
+    t += jitter(60, 25);
+  }
+
+  // ── Phase 5: Reset cursor + loop ──────────────────────────────
+  t += 200;
+
+  after(() => {
+    const cursor = document.getElementById('cursor');
+    if (cursor) {
+      cursor.style.animation = '';
+      moveCursor(cols, -1);
+    }
+  }, t);
+
+  
+  after(() => startAnimation(), t + 400);
+}
+
+  window.addEventListener('load', startAnimation);
+</script>
+</body>
+</html>
