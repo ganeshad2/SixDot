@@ -1,8 +1,10 @@
 import os
 import sys
 import threading
+import webbrowser
 
-from PySide6.QtCore import QLibraryInfo, QTimer, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QLibraryInfo, QPropertyAnimation, QTimer, Qt, QUrl
+from PySide6.QtWebEngineWidgets import QWebEngineView
 
 qt_plugin_path = QLibraryInfo.path(QLibraryInfo.PluginsPath)
 os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", qt_plugin_path)
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -45,6 +48,8 @@ POSITION_TO_DOT_INDEX = {
 }
 
 MAX_TRANSCRIBABLE_WORD_LENGTH = 5
+IDLE_TIMEOUT_MS = 10000
+IDLE_FADE_DURATION_MS = 350
 
 
 class BraillePreviewWidget(QWidget):
@@ -113,34 +118,34 @@ class BraillePreviewWidget(QWidget):
                 )
 
 
-class BrandWordmarkWidget(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setMinimumHeight(84)
-        self.setMaximumHeight(84)
-        self.setStyleSheet(
-            "background-color: #050505;"
-            "border-radius: 18px;"
-        )
+# class BrandWordmarkWidget(QWidget):
+#     def __init__(self):
+#         super().__init__()
+#         self.setMinimumHeight(84)
+#         self.setMaximumHeight(84)
+#         self.setStyleSheet(
+#             "background-color: #050505;"
+#             "border-radius: 18px;"
+#         )
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.TextAntialiasing)
+#     def paintEvent(self, event):
+#         super().paintEvent(event)
+#         painter = QPainter(self)
+#         painter.setRenderHint(QPainter.Antialiasing)
+#         painter.setRenderHint(QPainter.TextAntialiasing)
 
-        rect = self.rect().adjusted(12, 8, -12, -8)
+#         rect = self.rect().adjusted(12, 8, -12, -8)
 
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#050505"))
-        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 18, 18)
+#         painter.setPen(Qt.NoPen)
+#         painter.setBrush(QColor("#050505"))
+#         painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 18, 18)
 
-        wordmark_font = QFont("Bahnschrift", 32, QFont.DemiBold)
-        wordmark_font.setLetterSpacing(QFont.AbsoluteSpacing, 2.8)
-        wordmark_font.setStretch(92)
-        painter.setFont(wordmark_font)
-        painter.setPen(QColor("#f5f7fb"))
-        painter.drawText(rect, Qt.AlignCenter, "SIXDOT")
+#         wordmark_font = QFont("Bahnschrift", 32, QFont.DemiBold)
+#         wordmark_font.setLetterSpacing(QFont.AbsoluteSpacing, 2.8)
+#         wordmark_font.setStretch(92)
+#         painter.setFont(wordmark_font)
+#         painter.setPen(QColor("#f5f7fb"))
+#         painter.drawText(rect, Qt.AlignCenter, "SIXDOT")
 
 
 class MainWindow(QMainWindow):
@@ -149,6 +154,27 @@ class MainWindow(QMainWindow):
         self.cap = None
         self.camera_index = None
         self.last_frame = None
+        self.is_idle_screen_visible = False
+        self.is_idle_fading_out = False
+        self.idle_transition_mode = None
+
+        self.idle_overlay = QWebEngineView(self)
+        self.idle_transition_overlay = QLabel(self)
+        self.idle_transition_overlay.setScaledContents(True)
+        self.idle_transition_overlay.hide()
+        self.idle_transition_effect = QGraphicsOpacityEffect(self.idle_transition_overlay)
+        self.idle_transition_overlay.setGraphicsEffect(self.idle_transition_effect)
+        self.idle_transition_effect.setOpacity(0.0)
+        self.idle_fade_animation = QPropertyAnimation(self.idle_transition_effect, b"opacity", self)
+        self.idle_fade_animation.setDuration(IDLE_FADE_DURATION_MS)
+        self.idle_fade_animation.setEasingCurve(QEasingCurve.InOutQuad)
+        self.idle_fade_animation.finished.connect(self._handle_idle_animation_finished)
+
+        file_path = os.path.abspath("SixDot_Logo_html_IDLE.html")
+        self.idle_overlay.setUrl(QUrl.fromLocalFile(file_path))
+
+        self.idle_overlay.setStyleSheet("background-color: #000000;")
+        self.idle_overlay.hide()  # start hidden
 
         self.setWindowTitle("SixDot Camera Control")
         self.resize(1100, 700)
@@ -223,6 +249,13 @@ class MainWindow(QMainWindow):
             """
         )
 
+        self.idle_timer = QTimer(self)
+        self.idle_timer.setSingleShot(True)
+        self.idle_timer.timeout.connect(self.show_idle_screen)
+        self.idle_timer.start(IDLE_TIMEOUT_MS)
+
+        self.setMouseTracking(True)
+
         self.video_label = QLabel("Starting camera...")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setMinimumSize(720, 420)
@@ -243,8 +276,12 @@ class MainWindow(QMainWindow):
             "padding: 4px 6px;"
         )
 
-        self.brand_wordmark = BrandWordmarkWidget()
-        self.brand_wordmark.setMinimumHeight(112)
+        self.brand_wordmark = QWebEngineView()
+
+        file_path = os.path.abspath("SixDot_Logo_html.html")
+        self.brand_wordmark.setUrl(QUrl.fromLocalFile(file_path))
+
+        self.brand_wordmark.setFixedHeight(100)
 
         self.detected_word_title = QLabel("Detected Word:")
         self.detected_word_title.setStyleSheet(
@@ -362,6 +399,8 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(root_layout)
         self.setCentralWidget(container)
+        container.setMouseTracking(True)
+        QApplication.instance().installEventFilter(self)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
@@ -449,10 +488,78 @@ class MainWindow(QMainWindow):
         y_offset = max(0, (scaled.height() - target_size.height()) // 2)
         return scaled.copy(x_offset, y_offset, target_size.width(), target_size.height())
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.last_frame is not None:
-            self.update_frame()
+    def mouseMoveEvent(self, event):
+        self.hide_idle_screen()
+        self.reset_idle_timer()
+        super().mouseMoveEvent(event)
+
+    def eventFilter(self, watched, event):
+        if event.type() in {
+            QEvent.MouseMove,
+            QEvent.MouseButtonPress,
+            QEvent.MouseButtonRelease,
+            QEvent.KeyPress,
+            QEvent.TouchBegin,
+        }:
+            self.hide_idle_screen()
+            self.reset_idle_timer()
+
+        return super().eventFilter(watched, event)
+
+    def reset_idle_timer(self):
+        self.idle_timer.start(IDLE_TIMEOUT_MS)
+
+    def show_idle_screen(self):
+        if self.is_idle_screen_visible or self.is_idle_fading_out:
+            return
+
+        gui_snapshot = self.grab()
+        self.idle_fade_animation.stop()
+        self.idle_overlay.setGeometry(0, 0, self.width(), self.height())
+        self.idle_overlay.show()
+        self.idle_overlay.raise_()
+        self.idle_transition_overlay.setGeometry(0, 0, self.width(), self.height())
+        self.idle_transition_overlay.setPixmap(gui_snapshot)
+        self.idle_transition_overlay.show()
+        self.idle_transition_overlay.raise_()
+        self.idle_transition_effect.setOpacity(1.0)
+        self.idle_transition_mode = "fade_in_idle"
+        self.is_idle_screen_visible = True
+        self.idle_fade_animation.setStartValue(1.0)
+        self.idle_fade_animation.setEndValue(0.0)
+        self.idle_fade_animation.start()
+
+    def hide_idle_screen(self):
+        if not self.is_idle_screen_visible:
+            return
+
+        self.is_idle_screen_visible = False
+        self.is_idle_fading_out = True
+        self.idle_fade_animation.stop()
+        self.idle_transition_overlay.setGeometry(0, 0, self.width(), self.height())
+        self.idle_transition_overlay.setPixmap(self.idle_overlay.grab())
+        self.idle_transition_overlay.show()
+        self.idle_transition_overlay.raise_()
+        self.idle_transition_effect.setOpacity(1.0)
+        self.idle_overlay.hide()
+        self.idle_transition_mode = "fade_out_idle"
+        self.idle_fade_animation.setStartValue(1.0)
+        self.idle_fade_animation.setEndValue(0.0)
+        self.idle_fade_animation.start()
+
+    def _handle_idle_animation_finished(self):
+        if self.idle_transition_mode == "fade_in_idle":
+            self.idle_transition_overlay.hide()
+            self.idle_transition_overlay.clear()
+            self.idle_transition_effect.setOpacity(0.0)
+            self.idle_transition_mode = None
+            return
+
+        self.idle_transition_overlay.hide()
+        self.idle_transition_overlay.clear()
+        self.idle_transition_effect.setOpacity(0.0)
+        self.is_idle_fading_out = False
+        self.idle_transition_mode = None
 
     def handle_connect_camera(self):
         selected_index = self.camera_selector.currentData()
@@ -522,6 +629,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.release_camera()
         super().closeEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.idle_overlay.setGeometry(0, 0, self.width(), self.height())
+        self.idle_transition_overlay.setGeometry(0, 0, self.width(), self.height())
+        if self.last_frame is not None:
+            self.update_frame()
 
 
 def main():
