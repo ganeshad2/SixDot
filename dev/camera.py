@@ -4,8 +4,8 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-# Prefer external-camera style indices first, then fall back to index 0.
-EXTERNAL_CAMERA_INDICES = [1, 2, 3, 4, 0]
+
+DEFAULT_CAMERA_INDICES = [1, 0]
 
 
 # used for threading terminal input without blocking the camera preview loop
@@ -17,6 +17,27 @@ CAPTURE_DIR.mkdir(exist_ok=True)
 
 def _camera_backends():
     return [cv2.CAP_DSHOW, cv2.CAP_ANY] if os.name == "nt" else [cv2.CAP_ANY]
+
+
+def discover_camera_indices(preferred_indices=None):
+    if os.name == "nt":
+        return list(preferred_indices or DEFAULT_CAMERA_INDICES)
+
+    detected_indices = []
+    for device in sorted(Path('/dev').glob('video[0-9]*')):
+        suffix = device.name.replace('video', '')
+        if suffix.isdigit():
+            detected_indices.append(int(suffix))
+
+    if not detected_indices:
+        return list(preferred_indices or DEFAULT_CAMERA_INDICES)
+
+    ordered = []
+    preferred = list(preferred_indices or DEFAULT_CAMERA_INDICES)
+    for idx in preferred + detected_indices:
+        if idx in detected_indices and idx not in ordered:
+            ordered.append(idx)
+    return ordered
 
 
 def open_camera_by_index(index):
@@ -42,9 +63,9 @@ def open_camera_by_index(index):
     return None, None
 
 
-def list_available_cameras(indices):
+def list_available_cameras(indices=None):
     available = []
-    for idx in indices:
+    for idx in discover_camera_indices(indices):
         cap, camera_index = open_camera_by_index(idx)
         if cap is not None:
             available.append(camera_index)
@@ -54,8 +75,8 @@ def list_available_cameras(indices):
 
 
 # camera selection and decleration
-def open_external_camera(indices):
-    for idx in indices:
+def open_external_camera(indices=None):
+    for idx in discover_camera_indices(indices):
         cap, camera_index = open_camera_by_index(idx)
         if cap is not None:
             return cap, camera_index
@@ -103,7 +124,7 @@ def input_thread():
 def main():
     global command, running
 
-    cap, cam_idx = open_external_camera(EXTERNAL_CAMERA_INDICES)
+    cap, cam_idx = open_external_camera()
     if cap is None:
         print("Error: External webcam not found.")
         print("Make sure it is plugged in and not used by another application.")
@@ -151,6 +172,9 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
     print("Program exited cleanly.")
+
+EXTERNAL_CAMERA_INDICES = discover_camera_indices(DEFAULT_CAMERA_INDICES)
+
 
 if __name__ == "__main__":
     main()

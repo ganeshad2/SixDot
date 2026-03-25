@@ -1,11 +1,13 @@
+import json
 import threading
 import time
+from pathlib import Path
 
 try:
     from adafruit_servokit import ServoKit
     import board
     import busio
-except (ImportError, NotImplementedError):
+except Exception:
     ServoKit = None
     board = None
     busio = None
@@ -15,23 +17,31 @@ def initialize_driver_kits():
     if ServoKit is None or board is None or busio is None:
         return {}
 
-    # Shared I2C bus
-    i2c = busio.I2C(board.SCL, board.SDA)
+    try:
+        i2c = busio.I2C(board.SCL, board.SDA)
+    except Exception as exc:
+        print(f"Hardware not available. Skipping motor execution. ({exc})")
+        return {}
 
-    # Set channels to the number of servo channels on your kit.
-    # 8 for FeatherWing, 16 for Shield/HAT/Bonnet.
-    kit1 = ServoKit(channels=16, i2c=i2c, address=0x40)
-    # kit2 = ServoKit(channels=16, i2c=i2c, address=0x41)
-
-    # Enable PCA9685 mapping depending on driver number calculated
-    return {
-        1: kit1,  # motors 0-15
-        # 2: kit2,  # motors 16-31
-        # 3: kit3,  # motors 32-47
+    driver_kits = {}
+    driver_addresses = {
+        1: 0x40,
+        2: 0x41,
     }
 
+    for driver, address in driver_addresses.items():
+        try:
+            driver_kits[driver] = ServoKit(channels=16, i2c=i2c, address=address)
+        except Exception as exc:
+            print(f"Driver {driver} at 0x{address:02X} not available. Skipping it. ({exc})")
 
-driver_kits = initialize_driver_kits()
+    if not driver_kits:
+        print("No servo drivers are available. Skipping motor execution.")
+
+    return driver_kits
+
+
+driver_kits = None
 
 # Part 1: create a LUT for alphabet to binary translation
 # logic is:
@@ -66,6 +76,27 @@ ON_ANGLE_BY_POSITION = {
     "middle right": 100,
     "bot right": 100,
 }
+
+CALIBRATION_PATH = Path(__file__).with_name("servo_home_on_calibration.json")
+HOME_BY_MOTOR = {}
+ON_BY_MOTOR = {}
+
+
+def load_home_on_calibration():
+    if not CALIBRATION_PATH.exists():
+        return {}, {}
+
+    try:
+        data = json.loads(CALIBRATION_PATH.read_text(encoding="utf-8"))
+        home_by_motor = {int(k): int(v) for k, v in data.get("home_by_motor", {}).items()}
+        on_by_motor = {int(k): int(v) for k, v in data.get("on_by_motor", {}).items()}
+        return home_by_motor, on_by_motor
+    except Exception as exc:
+        print(f"Calibration load failed. Falling back to default angles. ({exc})")
+        return {}, {}
+
+
+HOME_BY_MOTOR, ON_BY_MOTOR = load_home_on_calibration()
 
 # Part 2: Write motor LUT referencing alphabet LUT
 # logic is:
@@ -159,8 +190,12 @@ def print_translation(results):
 
 
 def run_motor(results):
+    global driver_kits
+
+    if driver_kits is None:
+        driver_kits = initialize_driver_kits()
+
     if not driver_kits:
-        print("Hardware not available. Skipping motor execution.")
         return
 
     def run_individual_motor(driver, motor_number, position):
@@ -175,8 +210,8 @@ def run_motor(results):
         channel = motor_number % 16
         servo = kit.servo[channel]
 
-        home_angle = HOME_ANGLE_BY_POSITION.get(position, 0)
-        on_angle = ON_ANGLE_BY_POSITION.get(position, 100)
+        home_angle = HOME_BY_MOTOR.get(motor_number, HOME_ANGLE_BY_POSITION.get(position, 0))
+        on_angle = ON_BY_MOTOR.get(motor_number, ON_ANGLE_BY_POSITION.get(position, 100))
 
         servo.angle = on_angle
         time.sleep(5)

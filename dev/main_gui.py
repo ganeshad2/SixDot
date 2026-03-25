@@ -1,7 +1,14 @@
+import os
 import sys
+import threading
+
+from PySide6.QtCore import QLibraryInfo, QTimer, Qt
+
+qt_plugin_path = QLibraryInfo.path(QLibraryInfo.PluginsPath)
+os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", qt_plugin_path)
+os.environ.setdefault("QT_PLUGIN_PATH", qt_plugin_path)
 
 import cv2
-from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -16,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from Easyocr_integration import detect_words_from_latest_capture
-from lookup import servo_lut, translate_word
+from lookup import run_motor, servo_lut, translate_word
 
 from camera import (
     EXTERNAL_CAMERA_INDICES,
@@ -36,6 +43,8 @@ POSITION_TO_DOT_INDEX = {
     "middle right": 4,
     "bot right": 5,
 }
+
+MAX_TRANSCRIBABLE_WORD_LENGTH = 5
 
 
 class BraillePreviewWidget(QWidget):
@@ -484,10 +493,25 @@ class MainWindow(QMainWindow):
             self.status_label.setText(error_message)
             return
 
-        detected_word = valid_words[0]
+        transcribable_words = [word for word in valid_words if len(word) <= MAX_TRANSCRIBABLE_WORD_LENGTH]
+        if not transcribable_words:
+            message = f"No detected words fit the {MAX_TRANSCRIBABLE_WORD_LENGTH}-letter hardware limit."
+            self.detected_word_value.setText(message)
+            self.braille_preview.clear_preview()
+            self.status_label.setText(f"{message} Using image: {image_path.name}.")
+            return
+
+        detected_word = transcribable_words[0]
         self.detected_word_value.setText(detected_word)
         self.braille_preview.set_word(detected_word)
-        self.status_label.setText(f"OCR complete. Using image: {image_path.name}")
+
+        results = translate_word(detected_word, servo_lut)
+        threading.Thread(target=run_motor, args=(results,), daemon=True).start()
+
+        self.status_label.setText(
+            f"OCR complete. Using image: {image_path.name}. "
+            f"Transcribing '{detected_word}' ({len(detected_word)}/{MAX_TRANSCRIBABLE_WORD_LENGTH} letters). Motor output triggered."
+        )
 
     def release_camera(self):
         self.timer.stop()
