@@ -313,27 +313,32 @@ class BraillePreviewWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.cells = []
+        self.labels = []
         self.setMinimumHeight(170)
         self.setStyleSheet("background-color: #f8fafc; border: 1px solid #d9e0ea; border-radius: 18px;")
 
     def set_word(self, word):
         self.cells = []
+        self.labels = []
         results = translate_word(word, servo_lut)
-        for _, motors in results[:8]:
+        for letter, motors in results[:8]:
             active_positions = {motor["position"] for motor in motors}
             self.cells.append(
                 [POSITION_TO_DOT_INDEX[position] for position in active_positions if position in POSITION_TO_DOT_INDEX]
             )
+            self.labels.append(letter)
         self.update()
 
     def clear_preview(self):
         self.cells = []
+        self.labels = []
         self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
 
         rect = self.rect().adjusted(12, 12, -12, -12)
         painter.fillRect(rect, QColor("#f8fafc"))
@@ -343,26 +348,34 @@ class BraillePreviewWidget(QWidget):
             painter.drawText(rect, Qt.AlignCenter, "Braille preview will appear here")
             return
 
+        label_band_height = max(24, int(rect.height() * 0.18))
+        braille_rect = QRectF(rect.left(), rect.top(), rect.width(), rect.height() - label_band_height)
+        label_rect_top = braille_rect.bottom()
+
         cell_count = len(self.cells)
-        cell_width = rect.width() / max(cell_count, 1)
-        dot_radius = max(5, min(12, int(min(cell_width / 8, rect.height() / 10))))
+        cell_width = braille_rect.width() / max(cell_count, 1)
+        dot_radius = max(5, min(12, int(min(cell_width / 8, braille_rect.height() / 10))))
         left_column_x_offset = 0.35
         right_column_x_offset = 0.65
-        row_y_offsets = (0.25, 0.5, 0.75)
+        row_y_offsets = (0.24, 0.49, 0.74)
 
         inactive_brush = QBrush(QColor("#d9e2ec"))
         active_brush = QBrush(QColor("#0f172a"))
         painter.setPen(QPen(QColor("#c7d2de"), 1))
 
+        label_font = QFont("DejaVu Sans")
+        label_font.setPixelSize(max(12, min(18, int(label_band_height * 0.5))))
+        label_font.setBold(True)
+
         for cell_index, active_dots in enumerate(self.cells):
-            cell_left = rect.left() + cell_index * cell_width
+            cell_left = braille_rect.left() + cell_index * cell_width
             dot_centers = [
-                (cell_left + cell_width * left_column_x_offset, rect.top() + rect.height() * row_y_offsets[0]),
-                (cell_left + cell_width * left_column_x_offset, rect.top() + rect.height() * row_y_offsets[1]),
-                (cell_left + cell_width * left_column_x_offset, rect.top() + rect.height() * row_y_offsets[2]),
-                (cell_left + cell_width * right_column_x_offset, rect.top() + rect.height() * row_y_offsets[0]),
-                (cell_left + cell_width * right_column_x_offset, rect.top() + rect.height() * row_y_offsets[1]),
-                (cell_left + cell_width * right_column_x_offset, rect.top() + rect.height() * row_y_offsets[2]),
+                (cell_left + cell_width * left_column_x_offset, braille_rect.top() + braille_rect.height() * row_y_offsets[0]),
+                (cell_left + cell_width * left_column_x_offset, braille_rect.top() + braille_rect.height() * row_y_offsets[1]),
+                (cell_left + cell_width * left_column_x_offset, braille_rect.top() + braille_rect.height() * row_y_offsets[2]),
+                (cell_left + cell_width * right_column_x_offset, braille_rect.top() + braille_rect.height() * row_y_offsets[0]),
+                (cell_left + cell_width * right_column_x_offset, braille_rect.top() + braille_rect.height() * row_y_offsets[1]),
+                (cell_left + cell_width * right_column_x_offset, braille_rect.top() + braille_rect.height() * row_y_offsets[2]),
             ]
 
             for dot_index, (center_x, center_y) in enumerate(dot_centers):
@@ -373,6 +386,13 @@ class BraillePreviewWidget(QWidget):
                     dot_radius * 2,
                     dot_radius * 2,
                 )
+
+            if cell_index < len(self.labels):
+                painter.setFont(label_font)
+                painter.setPen(QColor("#334155"))
+                label_rect = QRectF(cell_left, label_rect_top, cell_width, label_band_height)
+                painter.drawText(label_rect, Qt.AlignHCenter | Qt.AlignVCenter, self.labels[cell_index])
+                painter.setPen(QPen(QColor("#c7d2de"), 1))
 
 
 # class BrandWordmarkWidget(QWidget):
