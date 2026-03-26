@@ -1,5 +1,4 @@
 import json
-import threading
 import time
 from pathlib import Path
 
@@ -24,14 +23,24 @@ def initialize_driver_kits():
         return {}
 
     driver_kits = {}
-    driver_addresses = {
-        1: 0x40,
-        2: 0x41,
-    }
+    driver_addresses = {1: 0x40, 2: 0x41}
+    configured_addresses = CALIBRATION_META.get("driver_addresses", {})
+    if configured_addresses:
+        driver_addresses.update({int(driver): int(address) for driver, address in configured_addresses.items()})
+
+    actuation_range = int(CALIBRATION_META.get("default_actuation_range", 180))
+    pulse_width_range = CALIBRATION_META.get("pulse_width_range_us", [500, 2500])
+    pulse_min = int(pulse_width_range[0]) if len(pulse_width_range) > 0 else 500
+    pulse_max = int(pulse_width_range[1]) if len(pulse_width_range) > 1 else 2500
 
     for driver, address in driver_addresses.items():
         try:
-            driver_kits[driver] = ServoKit(channels=16, i2c=i2c, address=address)
+            kit = ServoKit(channels=16, i2c=i2c, address=address)
+            for channel in range(16):
+                servo = kit.servo[channel]
+                servo.actuation_range = actuation_range
+                servo.set_pulse_width_range(pulse_min, pulse_max)
+            driver_kits[driver] = kit
         except Exception as exc:
             print(f"Driver {driver} at 0x{address:02X} not available. Skipping it. ({exc})")
 
@@ -80,23 +89,24 @@ ON_ANGLE_BY_POSITION = {
 CALIBRATION_PATH = Path(__file__).with_name("servo_home_on_calibration.json")
 HOME_BY_MOTOR = {}
 ON_BY_MOTOR = {}
+CALIBRATION_META = {}
 
 
 def load_home_on_calibration():
     if not CALIBRATION_PATH.exists():
-        return {}, {}
+        return {}, {}, {}
 
     try:
         data = json.loads(CALIBRATION_PATH.read_text(encoding="utf-8"))
         home_by_motor = {int(k): int(v) for k, v in data.get("home_by_motor", {}).items()}
         on_by_motor = {int(k): int(v) for k, v in data.get("on_by_motor", {}).items()}
-        return home_by_motor, on_by_motor
+        return home_by_motor, on_by_motor, data.get("meta", {})
     except Exception as exc:
         print(f"Calibration load failed. Falling back to default angles. ({exc})")
-        return {}, {}
+        return {}, {}, {}
 
 
-HOME_BY_MOTOR, ON_BY_MOTOR = load_home_on_calibration()
+HOME_BY_MOTOR, ON_BY_MOTOR, CALIBRATION_META = load_home_on_calibration()
 
 # Part 2: Write motor LUT referencing alphabet LUT
 # logic is:
@@ -189,36 +199,16 @@ def print_translation(results):
                 print(f"  Driver {m['driver']} | Servo {m['motor']} | Position: {m['position']}")
 
 
-def run_motor(results):
+def run_motor(results, hold_position=False):
     global driver_kits
 
     if driver_kits is None:
         driver_kits = initialize_driver_kits()
 
     if not driver_kits:
-        return
+        return False
 
-    def run_individual_motor(driver, motor_number, position):
-        if motor_number is None or driver is None:
-            return
-
-        kit = driver_kits.get(driver)
-        if kit is None:
-            print(f"WARNING: No kit configured for driver {driver}, skipping motor {motor_number}")
-            return
-
-        channel = motor_number % 16
-        servo = kit.servo[channel]
-
-        home_angle = HOME_BY_MOTOR.get(motor_number, HOME_ANGLE_BY_POSITION.get(position, 0))
-        on_angle = ON_BY_MOTOR.get(motor_number, ON_ANGLE_BY_POSITION.get(position, 100))
-
-        servo.angle = on_angle
-        time.sleep(5)
-        servo.angle = home_angle
-
-    threads = []
-
+    active_motors = []
     for _, motor_dicts in results:
         for motor_dict in motor_dicts:
             motor_number = motor_dict.get("motor")
@@ -228,16 +218,63 @@ def run_motor(results):
             if driver is None and motor_number is not None:
                 driver = (motor_number // 16) + 1
 
-            if motor_number is not None and driver is not None:
-                thread = threading.Thread(
-                    target=run_individual_motor,
-                    args=(driver, motor_number, position),
-                )
-                threads.append(thread)
-                thread.start()
+            if motor_number is None or driver is None:
+                continue
 
-    for thread in threads:
-        thread.join()
+            active_motors.append((driver, motor_number, position))
+
+    for driver, motor_number, position in active_motors:
+        kit = driver_kits.get(driver)
+        if kit is None:
+            print(f"WARNING: No kit configured for driver {driver}, skipping motor {motor_number}")
+            continue
+
+        channel = motor_number % 16
+        servo = kit.servo[channel]
+        on_angle = ON_BY_MOTOR.get(motor_number, ON_ANGLE_BY_POSITION.get(position, 100))
+        servo.angle = on_angle
+        time.sleep(0.05)
+
+    if hold_position:
+        return True
+
+    time.sleep(5)
+
+    for driver, motor_number, position in reversed(active_motors):
+        kit = driver_kits.get(driver)
+        if kit is None:
+            continue
+
+        channel = motor_number % 16
+        servo = kit.servo[channel]
+        home_angle = HOME_BY_MOTOR.get(motor_number, HOME_ANGLE_BY_POSITION.get(position, 0))
+        servo.angle = home_angle
+        time.sleep(0.05)
+
+    return True
+
+
+def send_all_motors_home():
+    global driver_kits
+
+    if driver_kits is None:
+        driver_kits = initialize_driver_kits()
+
+    if not driver_kits:
+        return False
+
+    for motor_number, motor_config in sorted(servo_lut.items()):
+        driver = motor_driver_from_id(motor_number)
+        kit = driver_kits.get(driver)
+        if kit is None:
+            continue
+
+        channel = motor_number % 16
+        position = motor_config.get("position")
+        home_angle = HOME_BY_MOTOR.get(motor_number, HOME_ANGLE_BY_POSITION.get(position, 0))
+        kit.servo[channel].angle = home_angle
+
+    return True
 
 
 def main():

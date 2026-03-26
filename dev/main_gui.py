@@ -1,10 +1,16 @@
+import math
 import os
+import random
 import sys
 import threading
+import time
 import webbrowser
 
 from PySide6.QtCore import QEasingCurve, QEvent, QLibraryInfo, QPropertyAnimation, QTimer, Qt, QUrl
-from PySide6.QtWebEngineWidgets import QWebEngineView
+try:
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+except ImportError:
+    QWebEngineView = None
 
 qt_plugin_path = QLibraryInfo.path(QLibraryInfo.PluginsPath)
 os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", qt_plugin_path)
@@ -12,6 +18,7 @@ os.environ.setdefault("QT_PLUGIN_PATH", qt_plugin_path)
 
 import cv2
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QRectF
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -20,13 +27,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
-from Easyocr_integration import detect_words_from_latest_capture
-from lookup import run_motor, servo_lut, translate_word
+from Easyocr_integration import detect_words_from_image
+from lookup import run_motor, send_all_motors_home, servo_lut, translate_word
 
 from camera import (
     EXTERNAL_CAMERA_INDICES,
@@ -50,6 +56,257 @@ POSITION_TO_DOT_INDEX = {
 MAX_TRANSCRIBABLE_WORD_LENGTH = 5
 IDLE_TIMEOUT_MS = 10000
 IDLE_FADE_DURATION_MS = 350
+HOME_SETTLE_DELAY_SECONDS = 0.6
+
+
+BRAILLE_ANIMATION_SEQUENCE = [
+    ("S", [2, 3, 4]),
+    ("I", [2, 4]),
+    ("X", [1, 3, 4, 6]),
+    ("D", [1, 4, 5]),
+    ("O", [1, 3, 5]),
+    ("T", [2, 3, 4, 5]),
+]
+
+BRAILLE_DOT_TO_INDEX = {1: 0, 4: 1, 2: 2, 5: 3, 3: 4, 6: 5}
+
+
+class LocalHtmlView(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.is_idle_variant = False
+        self.animation_started_at = time.monotonic()
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self.update)
+        self.animation_timer.start(33)
+        self.stars = []
+        self._init_starfield()
+
+    def _init_starfield(self):
+        rng = random.Random(42)
+        self.stars = [
+            {
+                "x": rng.random(),
+                "y": rng.random(),
+                "radius": rng.uniform(0.8, 2.2),
+                "alpha": rng.uniform(0.08, 0.28),
+                "speed": rng.uniform(0.9, 2.4),
+                "phase": rng.uniform(0.0, math.tau),
+            }
+            for _ in range(130)
+        ]
+
+    def setUrl(self, url):
+        filename = url.toLocalFile() if hasattr(url, "toLocalFile") else str(url)
+        self.is_idle_variant = filename.endswith("SixDot_Logo_html_IDLE.html")
+        self.update()
+
+    def _timeline_state(self, elapsed_ms):
+        letter_count = len(BRAILLE_ANIMATION_SEQUENCE)
+        letters_visible = [False] * letter_count
+        braille_visible = [False] * letter_count
+        cursor_index = -1
+        cursor_blinking = True
+        tagline_progress = 0.0
+
+        t = 300
+        for idx in range(letter_count):
+            if elapsed_ms >= t:
+                letters_visible[idx] = True
+                cursor_index = idx
+            t += 140
+
+        t += 700
+        if elapsed_ms >= t - 120:
+            cursor_blinking = False
+
+        for idx in range(letter_count - 1, -1, -1):
+            if elapsed_ms >= t:
+                letters_visible[idx] = False
+                cursor_index = idx - 1
+            t += 135
+
+        restart_cursor_at = t + 250
+        if elapsed_ms >= restart_cursor_at:
+            cursor_blinking = True
+            cursor_index = -1
+
+        t = restart_cursor_at + 150
+        for idx in range(letter_count):
+            if elapsed_ms >= t:
+                braille_visible[idx] = True
+                cursor_index = idx
+            t += 190
+
+        tagline_at = t - 100
+        if elapsed_ms >= tagline_at:
+            tagline_progress = min(1.0, (elapsed_ms - tagline_at) / 1000.0)
+
+        t += 600
+        if elapsed_ms >= t - 120:
+            cursor_blinking = False
+
+        for idx in range(letter_count - 1, -1, -1):
+            if elapsed_ms >= t:
+                braille_visible[idx] = False
+                cursor_index = idx - 1
+            t += 70
+
+        reset_at = t + 200
+        if elapsed_ms >= reset_at:
+            cursor_blinking = True
+            cursor_index = -1
+
+        loop_duration = reset_at + 400
+        return {
+            "letters_visible": letters_visible,
+            "braille_visible": braille_visible,
+            "cursor_index": cursor_index,
+            "cursor_blinking": cursor_blinking,
+            "tagline_progress": tagline_progress,
+            "loop_duration": loop_duration,
+        }
+
+    def _variant_metrics(self, rect):
+        if self.is_idle_variant:
+            dot_size = max(12.0, min(rect.width() / 38.0, rect.height() / 10.5))
+            dot_gap = dot_size * 0.55
+            col_gap = dot_size * 1.6
+            letter_font_px = dot_size * 3.2
+            tagline_font_px = dot_size * 0.75
+            stage_offset_y = -dot_size * 0.5
+        else:
+            dot_size = max(8.0, min(rect.width() / 52.0, rect.height() / 8.5))
+            dot_gap = dot_size * 0.6
+            col_gap = dot_size * 1.8
+            letter_font_px = dot_size * 2.7
+            tagline_font_px = dot_size * 0.55
+            stage_offset_y = dot_size * 1.1
+
+        grid_width = (2 * dot_size) + dot_gap
+        grid_height = (3 * dot_size) + (2 * dot_gap)
+        return {
+            "dot_size": dot_size,
+            "dot_gap": dot_gap,
+            "col_gap": col_gap,
+            "grid_width": grid_width,
+            "grid_height": grid_height,
+            "letter_font_px": letter_font_px,
+            "tagline_font_px": tagline_font_px,
+            "stage_offset_y": stage_offset_y,
+        }
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#111111"))
+
+        now_ms = int((time.monotonic() - self.animation_started_at) * 1000)
+        state = self._timeline_state(now_ms % self._timeline_state(0)["loop_duration"])
+        rect = self.rect().adjusted(8, 8, -8, -8)
+        metrics = self._variant_metrics(rect)
+
+        self._paint_stars(painter, rect, now_ms)
+        self._paint_animation(painter, rect, metrics, state, now_ms)
+
+    def _paint_stars(self, painter, rect, now_ms):
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        for star in self.stars:
+            twinkle = 0.5 + 0.5 * math.sin((now_ms / 1000.0) * star["speed"] + star["phase"])
+            alpha = max(0.0, min(1.0, 0.15 + twinkle * star["alpha"]))
+            color = QColor(255, 255, 255)
+            color.setAlphaF(alpha)
+            painter.setBrush(color)
+            x = rect.left() + star["x"] * rect.width()
+            y = rect.top() + star["y"] * rect.height()
+            radius = star["radius"]
+            painter.drawEllipse(QRectF(x - radius, y - radius, radius * 2, radius * 2))
+        painter.restore()
+
+    def _paint_animation(self, painter, rect, metrics, state, now_ms):
+        dot_size = metrics["dot_size"]
+        dot_gap = metrics["dot_gap"]
+        col_gap = metrics["col_gap"]
+        grid_width = metrics["grid_width"]
+        grid_height = metrics["grid_height"]
+        display_width = len(BRAILLE_ANIMATION_SEQUENCE) * grid_width + (len(BRAILLE_ANIMATION_SEQUENCE) - 1) * col_gap
+        start_x = rect.center().x() - (display_width / 2.0)
+        center_y = rect.center().y() + metrics["stage_offset_y"]
+        top_y = center_y - (grid_height / 2.0)
+
+        letter_font = QFont("DejaVu Sans")
+        letter_font.setBold(True)
+        letter_font.setPixelSize(int(metrics["letter_font_px"]))
+
+        active_dot = QColor("#ffffff")
+        inactive_dot = QColor("#272727")
+        text_color = QColor("#ffffff")
+
+        painter.save()
+        for idx, (letter, dots) in enumerate(BRAILLE_ANIMATION_SEQUENCE):
+            cell_left = start_x + idx * (grid_width + col_gap)
+            cell_rect = QRectF(cell_left, top_y, grid_width, grid_height)
+
+            if state["letters_visible"][idx]:
+                painter.setPen(text_color)
+                painter.setFont(letter_font)
+                painter.drawText(cell_rect, Qt.AlignCenter, letter)
+
+            if state["braille_visible"][idx]:
+                grid = [0, 0, 0, 0, 0, 0]
+                for dot in dots:
+                    grid[BRAILLE_DOT_TO_INDEX[dot]] = 1
+                centers = [
+                    (cell_left + (dot_size / 2.0), top_y + (dot_size / 2.0)),
+                    (cell_left + dot_size + dot_gap + (dot_size / 2.0), top_y + (dot_size / 2.0)),
+                    (cell_left + (dot_size / 2.0), top_y + dot_size + dot_gap + (dot_size / 2.0)),
+                    (cell_left + dot_size + dot_gap + (dot_size / 2.0), top_y + dot_size + dot_gap + (dot_size / 2.0)),
+                    (cell_left + (dot_size / 2.0), top_y + 2 * (dot_size + dot_gap) + (dot_size / 2.0)),
+                    (cell_left + dot_size + dot_gap + (dot_size / 2.0), top_y + 2 * (dot_size + dot_gap) + (dot_size / 2.0)),
+                ]
+                painter.setPen(Qt.NoPen)
+                for dot_idx, (cx, cy) in enumerate(centers):
+                    painter.setBrush(active_dot if grid[dot_idx] else inactive_dot)
+                    painter.drawEllipse(QRectF(cx - dot_size / 2.0, cy - dot_size / 2.0, dot_size, dot_size))
+
+        self._paint_cursor(painter, top_y, grid_height, start_x, grid_width, col_gap, state, now_ms)
+        self._paint_tagline(painter, rect, top_y + grid_height, metrics, state)
+        painter.restore()
+
+    def _paint_cursor(self, painter, top_y, grid_height, start_x, grid_width, col_gap, state, now_ms):
+        cursor_index = state["cursor_index"]
+        if cursor_index < 0:
+            return
+
+        if state["cursor_blinking"] and ((now_ms // 360) % 2 == 1):
+            return
+
+        cursor_width = 6 if self.is_idle_variant else 3
+        cursor_x = start_x + ((cursor_index + 1) * grid_width) + (cursor_index * col_gap) + (col_gap * 0.5)
+        cursor_rect = QRectF(cursor_x, top_y, cursor_width, grid_height)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawRoundedRect(cursor_rect, 2, 2)
+
+    def _paint_tagline(self, painter, rect, grid_bottom, metrics, state):
+        progress = state["tagline_progress"]
+        if progress <= 0:
+            return
+
+        color = QColor(210, 210, 210)
+        color.setAlphaF(min(0.85, progress * 0.85))
+        font = QFont("DejaVu Sans")
+        font.setPixelSize(int(metrics["tagline_font_px"]))
+        font.setLetterSpacing(QFont.AbsoluteSpacing, max(2.0, metrics["tagline_font_px"] * 0.3))
+        painter.setFont(font)
+        painter.setPen(color)
+
+        text_rect = QRectF(rect.left(), grid_bottom + metrics["dot_size"] * (1.6 if self.is_idle_variant else 1.0), rect.width(), metrics["tagline_font_px"] * 2.0)
+        painter.drawText(text_rect, Qt.AlignHCenter | Qt.AlignTop, "FEEL EVERY LETTER")
+
+
+HtmlView = QWebEngineView or LocalHtmlView
 
 
 class BraillePreviewWidget(QWidget):
@@ -154,11 +411,13 @@ class MainWindow(QMainWindow):
         self.cap = None
         self.camera_index = None
         self.last_frame = None
+        self.frozen_frame = None
+        self.preview_frozen = False
         self.is_idle_screen_visible = False
         self.is_idle_fading_out = False
         self.idle_transition_mode = None
 
-        self.idle_overlay = QWebEngineView(self)
+        self.idle_overlay = HtmlView(self)
         self.idle_transition_overlay = QLabel(self)
         self.idle_transition_overlay.setScaledContents(True)
         self.idle_transition_overlay.hide()
@@ -276,7 +535,7 @@ class MainWindow(QMainWindow):
             "padding: 4px 6px;"
         )
 
-        self.brand_wordmark = QWebEngineView()
+        self.brand_wordmark = HtmlView()
 
         file_path = os.path.abspath("SixDot_Logo_html.html")
         self.brand_wordmark.setUrl(QUrl.fromLocalFile(file_path))
@@ -317,20 +576,16 @@ class MainWindow(QMainWindow):
         self.braille_preview = BraillePreviewWidget()
 
         self.camera_selector = QComboBox()
-        self.refresh_button = QPushButton("Refresh Cameras")
         self.connect_button = QPushButton("Connect Camera")
-        self.save_button = QPushButton("Save Snapshot")
-        self.ocr_button = QPushButton("Run OCR")
-        self.info_button = QPushButton("Camera Info")
+        self.capture_ocr_button = QPushButton("Capture + OCR")
+        self.home_button = QPushButton("All Home")
         self.quit_button = QPushButton("Quit")
-        self.ocr_button.setObjectName("primaryButton")
+        self.capture_ocr_button.setObjectName("primaryButton")
         self.quit_button.setObjectName("dangerButton")
 
-        self.refresh_button.clicked.connect(self.populate_camera_selector)
         self.connect_button.clicked.connect(self.handle_connect_camera)
-        self.save_button.clicked.connect(self.handle_save_snapshot)
-        self.ocr_button.clicked.connect(self.handle_run_ocr)
-        self.info_button.clicked.connect(self.handle_camera_info)
+        self.capture_ocr_button.clicked.connect(self.handle_capture_and_run_ocr)
+        self.home_button.clicked.connect(self.handle_send_all_home)
         self.quit_button.clicked.connect(self.close)
 
         camera_label = QLabel("Camera Selection")
@@ -341,11 +596,9 @@ class MainWindow(QMainWindow):
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.addWidget(camera_label)
         controls_layout.addWidget(self.camera_selector)
-        controls_layout.addWidget(self.refresh_button)
         controls_layout.addWidget(self.connect_button)
-        controls_layout.addWidget(self.save_button)
-        controls_layout.addWidget(self.ocr_button)
-        controls_layout.addWidget(self.info_button)
+        controls_layout.addWidget(self.capture_ocr_button)
+        controls_layout.addWidget(self.home_button)
         controls_layout.addSpacing(6)
         controls_layout.addWidget(self.detected_word_title)
         controls_layout.addWidget(self.detected_word_value)
@@ -430,9 +683,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(
                 "Make sure the webcam is plugged in, then click Refresh Cameras."
             )
-            self.save_button.setEnabled(False)
-            self.ocr_button.setEnabled(True)
-            self.info_button.setEnabled(False)
+            self.capture_ocr_button.setEnabled(True)
             return
 
         self.set_active_camera(cap, camera_index)
@@ -442,10 +693,10 @@ class MainWindow(QMainWindow):
         self.cap = cap
         self.camera_index = camera_index
         self.last_frame = None
+        self.frozen_frame = None
+        self.preview_frozen = False
         self.status_label.setText(f"Camera connected. {get_camera_info(self.camera_index)}")
-        self.save_button.setEnabled(True)
-        self.ocr_button.setEnabled(True)
-        self.info_button.setEnabled(True)
+        self.capture_ocr_button.setEnabled(True)
         self.timer.start(30)
 
     def update_frame(self):
@@ -459,6 +710,12 @@ class MainWindow(QMainWindow):
             return
 
         self.last_frame = frame.copy()
+        if self.preview_frozen:
+            return
+
+        self.display_frame(frame)
+
+    def display_frame(self, frame):
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         height, width, channel_count = rgb_frame.shape
         bytes_per_line = channel_count * width
@@ -574,30 +831,67 @@ class MainWindow(QMainWindow):
 
         self.set_active_camera(cap, camera_index)
 
-    def handle_save_snapshot(self):
-        success, message, filepath = save_snapshot(self.last_frame, self.camera_index)
-        if success and filepath is not None:
-            self.status_label.setText(f"{message} Saved to: {filepath}")
-        else:
-            self.status_label.setText(message)
+    def handle_send_all_home(self):
+        self.status_label.setText("Sending all motors to HOME position...")
+        self.detected_word_value.setText("No word detected yet")
+        self.braille_preview.clear_preview()
+        self.preview_frozen = False
+        self.frozen_frame = None
+        if self.last_frame is not None:
+            self.display_frame(self.last_frame)
 
-    def handle_camera_info(self):
-        if self.camera_index is None:
-            self.status_label.setText("No active camera.")
+        def worker():
+            success = send_all_motors_home()
+            if success:
+                QTimer.singleShot(0, lambda: self.status_label.setText("All motors moved to HOME position."))
+            else:
+                QTimer.singleShot(0, lambda: self.status_label.setText("Motor drivers unavailable. Unable to send motors HOME."))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def process_detected_word(self, word, image_name):
+        self.detected_word_value.setText(word)
+        self.braille_preview.set_word(word)
+
+        def worker():
+            home_success = send_all_motors_home()
+            if home_success:
+                time.sleep(HOME_SETTLE_DELAY_SECONDS)
+            motor_success = run_motor(translate_word(word, servo_lut), hold_position=True)
+
+            def update_status():
+                if not home_success or not motor_success:
+                    self.status_label.setText("Motor drivers unavailable. Braille preview updated, but motor output was skipped.")
+                    return
+
+                self.status_label.setText(
+                    f"Using image: {image_name}. Transcribing '{word}' ({len(word)}/{MAX_TRANSCRIBABLE_WORD_LENGTH} letters)."
+                )
+
+            QTimer.singleShot(0, update_status)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def handle_capture_and_run_ocr(self):
+        self.status_label.setText("Capturing snapshot and running OCR...")
+        success, message, filepath = save_snapshot(self.last_frame, self.camera_index)
+
+        if success and self.last_frame is not None:
+            self.frozen_frame = self.last_frame.copy()
+            self.preview_frozen = True
+            self.display_frame(self.frozen_frame)
+
+        if not success or filepath is None:
+            self.detected_word_value.setText(message)
+            self.braille_preview.clear_preview()
+            self.status_label.setText(message)
             return
 
-        info = get_camera_info(self.camera_index)
-        self.status_label.setText(info)
-        QMessageBox.information(self, "Camera Info", info)
-
-    def handle_run_ocr(self):
-        self.status_label.setText("Running OCR on latest saved snapshot...")
-        image_path, valid_words, error_message = detect_words_from_latest_capture()
-
-        if error_message:
-            self.detected_word_value.setText(error_message)
+        valid_words = detect_words_from_image(filepath)
+        if not valid_words:
+            self.detected_word_value.setText("No valid words found.")
             self.braille_preview.clear_preview()
-            self.status_label.setText(error_message)
+            self.status_label.setText(f"No valid words found. Using image: {filepath.name}.")
             return
 
         transcribable_words = [word for word in valid_words if len(word) <= MAX_TRANSCRIBABLE_WORD_LENGTH]
@@ -605,20 +899,10 @@ class MainWindow(QMainWindow):
             message = f"No detected words fit the {MAX_TRANSCRIBABLE_WORD_LENGTH}-letter hardware limit."
             self.detected_word_value.setText(message)
             self.braille_preview.clear_preview()
-            self.status_label.setText(f"{message} Using image: {image_path.name}.")
+            self.status_label.setText(f"{message} Using image: {filepath.name}.")
             return
 
-        detected_word = transcribable_words[0]
-        self.detected_word_value.setText(detected_word)
-        self.braille_preview.set_word(detected_word)
-
-        results = translate_word(detected_word, servo_lut)
-        threading.Thread(target=run_motor, args=(results,), daemon=True).start()
-
-        self.status_label.setText(
-            f"OCR complete. Using image: {image_path.name}. "
-            f"Transcribing '{detected_word}' ({len(detected_word)}/{MAX_TRANSCRIBABLE_WORD_LENGTH} letters). Motor output triggered."
-        )
+        self.process_detected_word(transcribable_words[0], filepath.name)
 
     def release_camera(self):
         self.timer.stop()

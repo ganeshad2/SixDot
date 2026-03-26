@@ -34,6 +34,7 @@ from adafruit_servokit import ServoKit
 # USER-TUNABLE SETTINGS
 # =========================
 DRIVER_ADDRESSES = {
+    1: 0x40,
     2: 0x41,
     # 3: 0x42,
 }
