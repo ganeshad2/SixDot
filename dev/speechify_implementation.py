@@ -1,95 +1,110 @@
-import os
-import warnings
-import logging
-import easyocr
-from pathlib import Path
-import requests
 import base64
+import os
+import shutil
+import subprocess
+import tempfile
 
-SPEECHIFY_API_KEY = "yVmH07Incql1X1liu3F023Fd9HWFQggL7eMDR_gVsos="
+import requests
+
+SPEECHIFY_API_KEY = ""
+SPEECHIFY_TTS_URL = "https://api.speechify.ai/v1/audio/speech"
+PLAYER_CANDIDATES = (
+    "ffplay",
+    "mpg123",
+    "mpv",
+    "mplayer",
+    "cvlc",
+    "vlc",
+    "gst-play-1.0",
+    "powershell",
+)
+
+def get_audio_players():
+    players = []
+    for player in PLAYER_CANDIDATES:
+        if shutil.which(player):
+            players.append(player)
+
+    if not players:
+        raise RuntimeError(
+            "No supported MP3 player found. Install one of: ffplay, mpg123, mpv, mplayer, cvlc, vlc, gst-play-1.0, or use Windows PowerShell playback."
+        )
+
+    return players
+
+def play_audio_file(file_path, player):
+    if player == "ffplay":
+        command = [player, "-nodisp", "-autoexit", "-loglevel", "quiet", file_path]
+    elif player == "mpg123":
+        command = [player, "-q", file_path]
+    elif player == "mpv":
+        command = [player, "--no-video", "--really-quiet", file_path]
+    elif player == "mplayer":
+        command = [player, "-really-quiet", file_path]
+    elif player == "cvlc":
+        command = [player, "--play-and-exit", "--intf", "dummy", file_path]
+    elif player == "vlc":
+        command = [player, "--play-and-exit", "--intf", "dummy", file_path]
+    elif player == "gst-play-1.0":
+        command = [player, "--no-interactive", file_path]
+    elif player == "powershell":
+        command = [
+            player,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "Add-Type -AssemblyName presentationCore; "
+                "$player = New-Object System.Windows.Media.MediaPlayer; "
+                f"$player.Open([Uri]'{file_path}'); "
+                "$player.Play(); "
+                "while ($player.NaturalDuration.HasTimeSpan -eq $false) { Start-Sleep -Milliseconds 100 }; "
+                "Start-Sleep -Milliseconds ($player.NaturalDuration.TimeSpan.TotalMilliseconds + 250); "
+                "$player.Stop(); "
+                "$player.Close();"
+            ),
+        ]
+    else:
+        raise RuntimeError(f"Unsupported audio player: {player}")
+
+    subprocess.run(command, check=True)
 
 def speak_text(text):
-
-    url = "https://api.sws.speechify.com/v1/audio/speech"
-
     headers = {
         "Authorization": f"Bearer {SPEECHIFY_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
-
     data = {
         "input": text,
-        "voice_id": "george",
-        "audio_format": "mp3"
+        "voice_id": "leon",
+        "audio_format": "mp3",
     }
 
-    response = requests.post(url, json=data, headers=headers)
-
+    response = requests.post(SPEECHIFY_TTS_URL, json=data, headers=headers, timeout=30)
+    response.raise_for_status()
     result = response.json()
-
     audio_bytes = base64.b64decode(result["audio_data"])
 
-    with open("speech_output.mp3", "wb") as f:
-        f.write(audio_bytes)
+    players = get_audio_players()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
+        temp_audio.write(audio_bytes)
+        temp_audio_path = temp_audio.name
 
-    os.system("start speech_output.mp3")  # plays the audio on Windows
+    try:
+        last_error = None
+        for player in players:
+            try:
+                play_audio_file(temp_audio_path, player)
+                return
+            except (OSError, subprocess.SubprocessError) as exc:
+                last_error = exc
 
-from lookup import translate_word, print_translation, run_motor, servo_lut
-
-# mutes the warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-warnings.filterwarnings("ignore")
-logging.getLogger("easyocr").setLevel(logging.FATAL)
-logging.getLogger("torch").setLevel(logging.FATAL)
-
-
-reader = easyocr.Reader(['en'], gpu=False)                           # Creates english OCR model & disables CUDA warning
-
-
-CAPTURE_DIR = Path.cwd() / "captures"
-
-
-#images = list(CAPTURE_DIR.glob("*.jpg"))                             # Gets latest image saved by camera.py
-IMAGE_PATH = Path.cwd() / "dev" / "Test Images" / "Test image 1.1.jpg"                             
-#if not images:
-#    print("No images found in captures directory.")
-#    raise SystemExit()
-
-#IMAGE_PATH = max(images, key=lambda p: p.stat().st_mtime)
-
-print(f"\nUsing image: {IMAGE_PATH.resolve()}")
+        raise RuntimeError(f"All audio players failed: {last_error}")
+    finally:
+        if os.path.exists(temp_audio_path):
+            os.remove(temp_audio_path)
 
 
-
-results = reader.readtext(str(IMAGE_PATH))                           # Reads the image
-word = [text for (_, text, _) in results] if results else []         # Makes it to return the text part (bounding box, text, score)
-
-#print("\neasyOCR output:", word)
-
-
-if not word:                                                         # Exit if nothing is found
-    print("No text detected")
-    raise SystemExit()
-
-
-
-valid_words = []                                                      # list of words detected
-for t in word:                                                        # loops through each letter of "word"
-    cleaned = t.strip()
-    if cleaned.isalpha():                                             # Checks if "word" is only letters
-        valid_words.append(cleaned)
-
-if not valid_words:
-    print("No valid words found")
-    raise SystemExit()
-
-print("\nWords chosen for lookup:", valid_words)
-
-
-for w in valid_words:
-    print(f"\nWord chosen for lookup: '{w}'")
-    braille_results = translate_word(w, servo_lut)
-    print_translation(braille_results)
-    run_motor(braille_results)
-    speak_text(w)
-
+# insert lines into easyocr_integration.py
+# from speechify_implementation import speak_text
+# speak_text(word) in def run_lookup_for_words(words)
